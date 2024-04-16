@@ -22,6 +22,7 @@ export type AsyncModuleConfig<T> = Pick<ModuleMetadata, 'imports' | 'exports'> &
     | {
         useFactory: (...args: any[]) => Promise<T> | T;
         inject?: any[];
+        name?: InjectionToken;
       }
   );
 
@@ -32,7 +33,7 @@ export function createModuleConfigProvider<T>(
   if ('useFactory' in options) {
     return [
       {
-        provide,
+        provide: options.name ?? provide,
         useFactory: options.useFactory,
         inject: options.inject ?? [],
       },

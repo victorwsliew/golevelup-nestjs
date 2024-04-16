@@ -1,4 +1,5 @@
 import Stripe from 'stripe';
+import { Type } from '@nestjs/common';
 
 type RequireAtLeastOne<T, Keys extends keyof T = keyof T> = Pick<
   T,
@@ -56,6 +57,11 @@ export interface StripeModuleConfig extends Partial<Stripe.StripeConfig> {
       logMatchingEventHandlers: boolean;
     };
   };
+
+  /**
+   * Injection Token for the StripeModuleConfig
+   */
+  name?: string | symbol | Type;
 }
 
 export interface StripeWebhookHandlerConfig {
