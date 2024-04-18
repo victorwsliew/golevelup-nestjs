@@ -12,7 +12,10 @@ import {
   STRIPE_WEBHOOK_SERVICE,
 } from './stripe.constants';
 import { InjectStripeModuleConfig } from './stripe.decorators';
-import { StripeModuleConfig } from './stripe.interfaces';
+import {
+  StripeModuleConfig,
+  StripeMultiCountryModuleConfig,
+} from './stripe.interfaces';
 import { StripePayloadService } from './stripe.payload.service';
 import { StripeWebhookController } from './stripe.webhook.controller';
 import { StripeWebhookService } from './stripe.webhook.service';
@@ -21,51 +24,54 @@ import { StripeWebhookService } from './stripe.webhook.service';
   controllers: [StripeWebhookController],
 })
 export class StripeModule
-  extends createConfigurableDynamicRootModule<StripeModule, StripeModuleConfig>(
-    STRIPE_MODULE_CONFIG_TOKEN,
-    {
-      imports: [DiscoveryModule],
-      providers: [
-        {
-          provide: Symbol('CONTROLLER_HACK'),
-          useFactory: (config: StripeModuleConfig) => {
-            const controllerPrefix =
-              config.webhookConfig?.controllerPrefix || 'stripe';
+  extends createConfigurableDynamicRootModule<
+    StripeModule,
+    StripeMultiCountryModuleConfig
+  >(STRIPE_MODULE_CONFIG_TOKEN, {
+    imports: [DiscoveryModule],
+    providers: [
+      {
+        provide: Symbol('CONTROLLER_HACK'),
+        useFactory: (config: StripeMultiCountryModuleConfig) => {
+          const controllerPrefix = 'stripe';
 
-            Reflect.defineMetadata(
-              PATH_METADATA,
-              controllerPrefix,
-              StripeWebhookController
-            );
-            config.webhookConfig?.decorators?.forEach((deco) => {
-              deco(StripeWebhookController);
-            });
-          },
-          inject: [STRIPE_MODULE_CONFIG_TOKEN],
+          Reflect.defineMetadata(
+            PATH_METADATA,
+            controllerPrefix,
+            StripeWebhookController
+          );
+
+          const firstConfig = config[Object.keys(config)[0]];
+          firstConfig.webhookConfig?.decorators?.forEach((deco) => {
+            deco(StripeWebhookController);
+          });
         },
-        {
-          provide: STRIPE_CLIENT_TOKEN,
-          useFactory: ({
-            apiKey,
-            typescript = true,
-            apiVersion = '2022-11-15',
-            webhookConfig,
-            ...options
-          }: StripeModuleConfig): Stripe => {
-            return new Stripe(apiKey, {
-              typescript,
-              apiVersion,
+        inject: [STRIPE_MODULE_CONFIG_TOKEN],
+      },
+      {
+        provide: STRIPE_CLIENT_TOKEN,
+        useFactory: (
+          config: StripeMultiCountryModuleConfig
+        ): {
+          [countryCode: string]: Stripe;
+        } => {
+          return Object.keys(config).reduce((acc, countryCode) => {
+            const { apiKey, webhookConfig, ...options } = config[countryCode];
+            acc[countryCode] = new Stripe(apiKey, {
+              typescript: true,
+              apiVersion: '2022-11-15',
               ...options,
             });
-          },
-          inject: [STRIPE_MODULE_CONFIG_TOKEN],
+            return acc;
+          }, {});
         },
-        StripeWebhookService,
-        StripePayloadService,
-      ],
-      exports: [STRIPE_MODULE_CONFIG_TOKEN, STRIPE_CLIENT_TOKEN],
-    }
-  )
+        inject: [STRIPE_MODULE_CONFIG_TOKEN],
+      },
+      StripeWebhookService,
+      StripePayloadService,
+    ],
+    exports: [STRIPE_MODULE_CONFIG_TOKEN, STRIPE_CLIENT_TOKEN],
+  })
   implements OnModuleInit
 {
   private readonly logger = new Logger(StripeModule.name);
@@ -74,7 +80,7 @@ export class StripeModule
     private readonly discover: DiscoveryService,
     private readonly externalContextCreator: ExternalContextCreator,
     @InjectStripeModuleConfig()
-    private readonly stripeModuleConfig: StripeModuleConfig
+    private readonly stripeModuleConfig: StripeMultiCountryModuleConfig
   ) {
     super();
   }
@@ -82,14 +88,19 @@ export class StripeModule
   public async onModuleInit() {
     // If they didn't provide a webhook config secret there's no reason
     // to even attempt discovery
-    if (!this.stripeModuleConfig.webhookConfig) {
+    if (Object.keys(this.stripeModuleConfig).length === 0) {
       return;
     }
 
     const noOneSecretProvided =
-      this.stripeModuleConfig.webhookConfig &&
-      !this.stripeModuleConfig.webhookConfig?.stripeSecrets.account &&
-      !this.stripeModuleConfig.webhookConfig?.stripeSecrets.connect;
+      Object.keys(this.stripeModuleConfig).length > 0 &&
+      Object.keys(this.stripeModuleConfig).every((countryCode) => {
+        const countryConfig = this.stripeModuleConfig[countryCode];
+        return (
+          !countryConfig.webhookConfig?.stripeSecrets.account &&
+          !countryConfig.webhookConfig?.stripeSecrets.connect
+        );
+      });
 
     if (noOneSecretProvided) {
       const errorMessage =
@@ -137,7 +148,11 @@ export class StripeModule
             undefined, // paramsFactory
             undefined, // contextId
             undefined, // inquirerId
-            undefined, // options
+            {
+              interceptors: false,
+              guards: false,
+              filters: false,
+            }, // options
             'stripe_webhook' // contextType
           ),
         }));
@@ -147,12 +162,12 @@ export class StripeModule
     const handleWebhook = async (webhookEvent: { type: string }) => {
       const { type } = webhookEvent;
       const handlers = webhookHandlers.filter((x) => x.key === type);
+      const { loggingConfiguration } =
+        this.stripeModuleConfig[Object.keys(this.stripeModuleConfig)[0]]
+          .webhookConfig || {};
 
       if (handlers.length) {
-        if (
-          this.stripeModuleConfig?.webhookConfig?.loggingConfiguration
-            ?.logMatchingEventHandlers
-        ) {
+        if (loggingConfiguration?.logMatchingEventHandlers) {
           this.logger.log(
             `Received webhook event for ${type}. Forwarding to ${handlers.length} event handlers`
           );
